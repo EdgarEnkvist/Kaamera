@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="et">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Kaamera shortcut</title>
+<style>
+:root{color-scheme:dark}
+body{margin:0;background:#0d0d10;color:#f2f2f2;font:16px/1.45 -apple-system,system-ui,sans-serif}
+section{max-width:520px;margin:0 auto;padding:calc(env(safe-area-inset-top,0px) + 16px) 16px calc(env(safe-area-inset-bottom,0px) + 16px);display:flex;flex-direction:column;gap:12px}
+[hidden]{display:none!important}
+h1{margin:0;font-size:24px;color:#ff8a2a}
+h2{margin:8px 0 0;font-size:14px;color:#9a9aa3}
+.row{display:flex;flex-wrap:wrap;gap:8px}
+button,input,.file{font:inherit;color:#f2f2f2;background:#18181d;border:1px solid #2c2c34;border-radius:12px;padding:12px}
+button{flex:1 1 100px;font-weight:700}
+button[aria-pressed=true],.go{background:#ff8a2a;border-color:#ff8a2a;color:#141008}
+.go{flex:none;padding:16px}
+button:disabled{opacity:.4}
+input{flex:1;min-width:0}
+.add button{flex:none}
+video,#result{width:100%;border-radius:14px;background:#000}
+video{max-height:60vh}
+#thumbs img{width:calc(33.3% - 6px);aspect-ratio:3/4;object-fit:cover;border-radius:10px}
+.file{text-align:center}.file input{display:none}
+#note{color:#9a9aa3}
+</style>
+<body>
+
+<section id="setup">
+  <h1>Seadista</h1>
+  <div id="groups"></div>
+  <button class="go" id="start">Ava kaamera</button>
+</section>
+
+<section id="camera" hidden>
+  <video id="video" playsinline muted autoplay></video>
+  <div id="geo" role="status"></div>
+  <button class="go" id="shot">Pildista</button>
+  <label class="file" id="fallback" hidden>Kaamera ei avanenud. Pildista siit<input type="file" id="file" accept="image/*" capture="environment"></label>
+  <div class="row" id="thumbs"></div>
+  <div class="row">
+    <button id="back">Tagasi</button>
+    <button id="undo">Kustuta viimane</button>
+    <button id="confirm">Confirm</button>
+  </div>
+</section>
+
+<section id="done" hidden>
+  <h1>Valmis</h1>
+  <img id="result" alt="Valmis kaart">
+  <button class="go" id="send">Saada kaart</button>
+  <div class="row">
+    <button id="sendRaw">Saada pildid eraldi</button>
+    <button id="again">Uus</button>
+  </div>
+  <div id="note" role="status"></div>
+</section>
+
+<script>
+// vaikimisi valikud; äpis saad juurde lisada
+const DEFAULTS=[
+  ["Tartu","Tallinn"],
+  ["Pirita","Mustamäe"],
+  ["Variant A","Variant B"],
+  ["Variant C","Variant D"]
+];
+const $=id=>document.getElementById(id);
+let groups=DEFAULTS.map(o=>({options:[...o],pick:o[0]}));
+try{
+  const s=JSON.parse(localStorage.getItem("setup"));
+  if(s&&s.length===4)groups=s;
+}catch(e){}
+const save=()=>{try{localStorage.setItem("setup",JSON.stringify(groups))}catch(e){}};
+
+function el(tag,text,parent){const e=document.createElement(tag);if(text)e.textContent=text;parent.appendChild(e);return e}
+function drawGroups(){
+  $("groups").textContent="";
+  groups.forEach((g,i)=>{
+    const box=el("div","",$("groups"));
+    el("h2","Button "+(i+1),box);
+    const row=el("div","",box);row.className="row";
+    for(const o of g.options){
+      const b=el("button",o,row);b.setAttribute("aria-pressed",o===g.pick);
+      b.onclick=()=>{g.pick=o;save();drawGroups()};
+    }
+    const add=el("div","",box);add.className="row add";add.style.marginTop="8px";
+    const input=el("input","",add);input.placeholder="Uus valik";input.setAttribute("aria-label","Uus valik, Button "+(i+1));
+    el("button","Lisa",add).onclick=()=>{
+      const v=input.value.trim();if(!v)return;
+      if(!g.options.includes(v))g.options.push(v);
+      g.pick=v;save();drawGroups();
+    };
+    el("button","Kustuta",add).onclick=()=>{
+      if(g.options.length<2)return;
+      g.options=g.options.filter(o=>o!==g.pick);g.pick=g.options[0];save();drawGroups();
+    };
+  });
+}
+
+let stream=null,photos=[],coords="",session=0;
+function show(id){for(const s of ["setup","camera","done"])$(s).hidden=s!==id;scrollTo(0,0)}
+// kaamera pannakse kinni kohe, kui seda ei vajata (aku)
+function stopCamera(){session++;if(stream)stream.getTracks().forEach(t=>t.stop());stream=null}
+
+async function startCamera(){
+  stopCamera();const mine=session;
+  $("fallback").hidden=true;$("video").hidden=false;$("shot").hidden=false;
+  try{
+    const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment",width:{ideal:1920},height:{ideal:1440}},audio:false});
+    if(mine!==session){s.getTracks().forEach(t=>t.stop());return}
+    stream=s;$("video").srcObject=s;
+  }catch(e){$("fallback").hidden=false;$("video").hidden=true;$("shot").hidden=true}
+}
+function locate(){
+  coords="";$("geo").textContent="Otsin asukohta…";
+  const fail=()=>$("geo").textContent="Asukohta ei saanud. Luba Safaris asukoht.";
+  if(!navigator.geolocation)return fail();
+  navigator.geolocation.getCurrentPosition(p=>{
+    coords=p.coords.latitude.toFixed(6)+", "+p.coords.longitude.toFixed(6);
+    $("geo").textContent="Asukoht: "+coords;
+  },fail,{enableHighAccuracy:true,timeout:15000,maximumAge:30000});
+}
+function drawThumbs(){
+  $("thumbs").textContent="";
+  for(const p of photos)el("img","",$("thumbs")).src=p.toDataURL("image/jpeg",0.5);
+  $("shot").textContent="Pildista ("+photos.length+")";
+  $("confirm").disabled=$("undo").disabled=!photos.length;
+}
+function addPhoto(source,w,h){
+  const s=Math.min(1,1600/Math.max(w,h)),c=document.createElement("canvas");
+  c.width=Math.round(w*s);c.height=Math.round(h*s);
+  c.getContext("2d").drawImage(source,0,0,c.width,c.height);
+  photos.push(c);drawThumbs();
+}
+
+$("start").onclick=()=>{photos=[];drawThumbs();show("camera");startCamera();locate()};
+$("shot").onclick=()=>{const v=$("video");if(v.videoWidth)addPhoto(v,v.videoWidth,v.videoHeight)};
+$("file").onchange=()=>{
+  const f=$("file").files[0];if(!f)return;
+  const img=new Image(),url=URL.createObjectURL(f);
+  img.onload=()=>{addPhoto(img,img.naturalWidth,img.naturalHeight);URL.revokeObjectURL(url)};
+  img.src=url;$("file").value="";
+};
+$("undo").onclick=()=>{photos.pop();drawThumbs()};
+$("back").onclick=()=>{stopCamera();show("setup")};
+document.addEventListener("visibilitychange",()=>{
+  if(document.hidden)stopCamera();else if(!$("camera").hidden)startCamera();
+});
+
+let cardFile=null,rawFiles=[],cardText="";
+const toFile=(canvas,name)=>new Promise(ok=>canvas.toBlob(b=>ok(new File([b],name,{type:"image/jpeg"})),"image/jpeg",0.9));
+
+function makeCard(lines){
+  const W=1080,P=24,cols=Math.min(photos.length,3),cell=(W-P*(cols+1))/cols,cellH=cell*4/3,rows=Math.ceil(photos.length/cols);
+  const c=document.createElement("canvas"),x=c.getContext("2d");
+  const font=i=>(i===0?"700 ":"")+"44px sans-serif";
+  // pikad read murtakse
+  const wrapped=[];
+  lines.forEach((line,i)=>{
+    x.font=font(i);let cur="";
+    for(const ch of line){
+      if(x.measureText(cur+ch).width>W-P*2){wrapped.push([cur,i]);cur=""}
+      cur+=ch;
+    }
+    wrapped.push([cur,i]);
+  });
+  const top=P+rows*(cellH+P);
+  c.width=W;c.height=Math.round(top+wrapped.length*60+P);
+  x.fillStyle="#0d0d10";x.fillRect(0,0,W,c.height);
+  photos.forEach((img,i)=>{
+    const s=Math.min(cell/img.width,cellH/img.height),w=img.width*s,h=img.height*s;
+    x.drawImage(img,P+(i%cols)*(cell+P)+(cell-w)/2,P+Math.floor(i/cols)*(cellH+P)+(cellH-h)/2,w,h);
+  });
+  x.textBaseline="top";
+  wrapped.forEach(([text,i],n)=>{
+    x.font=font(i);x.fillStyle=i===0?"#ff8a2a":"#f2f2f2";
+    x.fillText(text,P,top+n*60);
+  });
+  return c;
+}
+
+$("confirm").onclick=async()=>{
+  if(!photos.length)return;
+  $("confirm").disabled=true;
+  stopCamera();
+  const [a,b,c,d]=groups.map(g=>g.pick);
+  const lines=[a+", "+b,coords||"asukoht puudub",c,d];
+  cardText=lines.join("\n");
+  const card=makeCard(lines);
+  $("result").src=card.toDataURL("image/jpeg",0.9);
+  cardFile=await toFile(card,"kaart.jpg");
+  rawFiles=await Promise.all(photos.map((p,i)=>toFile(p,"pilt"+(i+1)+".jpg")));
+  $("note").textContent="";show("done");
+};
+
+async function share(data){
+  if(!navigator.canShare||!navigator.canShare({files:data.files})){
+    $("note").textContent="Jagamine pole siin saadaval. Hoia kaardil sõrme ja salvesta.";return;
+  }
+  try{await navigator.share(data)}
+  catch(e){if(e.name!=="AbortError")$("note").textContent="Saatmine ei õnnestunud. Proovi uuesti."}
+}
+$("send").onclick=()=>share({files:[cardFile],text:cardText});
+$("sendRaw").onclick=()=>share({files:rawFiles,text:cardText});
+$("again").onclick=()=>show("setup");
+drawGroups();
+</script>
+</body>
+</html>
